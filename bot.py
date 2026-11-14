@@ -12,7 +12,7 @@ from telegram.ext import (
     filters,
 )
 
-# Estados da conversa (adicionado QUEM no início)
+# Estados da conversa
 QUEM, VALOR, CATEGORIA, DESCRICAO = range(4)
 
 # Configurações do Bot e Render
@@ -22,14 +22,35 @@ RENDER_URL = "https://controle-gastos-eper.onrender.com"
 
 ARQUIVO_CSV = "gastos.csv"
 
-# Garante que o CSV nasce com o cabeçalho atualizado (incluindo "Quem")
+# Garante que o CSV nasce com o cabeçalho se não existir
 if not os.path.exists(ARQUIVO_CSV):
     with open(ARQUIVO_CSV, mode="w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["Gasto", "Valor", "Mês", "Dia", "Ano", "Categoria", "Descrição", "Quem"])
 
 
+def base_esta_vazia() -> bool:
+    """Verifica se o CSV tem apenas o cabeçalho ou está sem registos."""
+    if not os.path.exists(ARQUIVO_CSV):
+        return True
+    with open(ARQUIVO_CSV, mode="r", encoding="utf-8") as f:
+        linhas = list(csv.reader(f))
+        # Se tiver 1 linha ou menos, significa que só tem o cabeçalho (ou está vazio)
+        return len(linhas) <= 1
+
+
 async def iniciar_gasto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    aviso_seguranca = ""
+    
+    # Se a base estiver limpa, avisa o utilizador para restaurar o backup primeiro!
+    if base_esta_vazia():
+        aviso_seguranca = (
+            "⚠️ **ATENÇÃO: A base de dados local está vazia!**\n"
+            "Parece que o Render reiniciou o servidor. "
+            "**Envie o seu último ficheiro `gastos.csv` aqui no chat antes de continuar** para não perder o histórico anterior!\n\n"
+            "-----------------------------------\n\n"
+        )
+
     teclado = [
         [InlineKeyboardButton("🙋‍♂️ Fernando", callback_data="Fernando")],
         [InlineKeyboardButton("🙋‍♀️ Namorada", callback_data="Namorada")],
@@ -37,7 +58,7 @@ async def iniciar_gasto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     reply_markup = InlineKeyboardMarkup(teclado)
 
     await update.message.reply_text(
-        "👤 **Quem está a fazer este registo?**",
+        aviso_seguranca + "👤 **Quem está a fazer este registo?**",
         reply_markup=reply_markup,
         parse_mode="Markdown",
     )
@@ -116,7 +137,7 @@ async def receber_descricao(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     mes = agora.month
     ano = agora.year
 
-    # Salva no arquivo CSV local com a coluna "Quem" no final
+    # Salva no arquivo CSV local
     with open(ARQUIVO_CSV, mode="a", newline="", encoding="utf-8") as arquivo:
         escritor = csv.writer(arquivo)
         escritor.writerow([descricao, f"{valor:.2f}", mes, dia, ano, categoria, descricao, quem])
@@ -133,7 +154,7 @@ async def receber_descricao(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         parse_mode="Markdown",
     )
 
-    # Envia automaticamente o arquivo CSV atualizado como backup no chat
+    # Envia o ficheiro atualizado de volta no chat como backup imediato
     with open(ARQUIVO_CSV, "rb") as arquivo:
         await update.message.reply_document(
             document=arquivo,
@@ -146,17 +167,21 @@ async def receber_descricao(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def resumo_gastos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Calcula e envia um resumo dos gastos direto no chat."""
-    if not os.path.exists(ARQUIVO_CSV) or os.path.getsize(ARQUIVO_CSV) == 0:
-        await update.message.reply_text("📭 Ainda não há gastos registrados para resumir.")
+    if base_esta_vazia():
+        await update.message.reply_text(
+            "⚠️ **Aviso:** A base de dados local está vazia ou o Render reiniciou.\n"
+            "Se tiver dados anteriores, envie o seu ficheiro `gastos.csv` de backup para o chat antes de solicitar o resumo.",
+            parse_mode="Markdown"
+        )
         return
 
     total_geral = 0.0
     por_categoria = {}
-    por_pessoa = {"Fernando": 0.0, "Namorada": 0.0}
+    por_pessoa = {}
 
     with open(ARQUIVO_CSV, mode="r", encoding="utf-8") as arquivo:
         leitor = csv.reader(arquivo)
-        cabecalho = next(leitor, None)  # Pula o cabeçalho
+        next(leitor, None)  # Pula o cabeçalho
 
         for linha in leitor:
             if len(linha) >= 8:
@@ -167,10 +192,7 @@ async def resumo_gastos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
                     total_geral += valor
                     por_categoria[categoria] = por_categoria.get(categoria, 0.0) + valor
-                    if quem in por_pessoa:
-                        por_pessoa[quem] += valor
-                    else:
-                        por_pessoa[quem] = por_pessoa.get(quem, 0.0) + valor
+                    por_pessoa[quem] = por_pessoa.get(quem, 0.0) + valor
                 except ValueError:
                     continue
 
@@ -190,8 +212,8 @@ async def resumo_gastos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def exportar_csv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Envia o arquivo CSV de backup a qualquer momento com /exportar."""
-    if not os.path.exists(ARQUIVO_CSV) or os.path.getsize(ARQUIVO_CSV) == 0:
-        await update.message.reply_text("📭 Ainda não há gastos registrados para exportar.")
+    if base_esta_vazia():
+        await update.message.reply_text("📭 A base de dados local está vazia no momento.")
         return
 
     with open(ARQUIVO_CSV, "rb") as arquivo:
@@ -200,6 +222,17 @@ async def exportar_csv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             filename="gastos.csv",
             caption="📊 Aqui está o seu backup atualizado dos gastos!"
         )
+
+
+async def restaurar_csv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Permite fazer o upload/restauro de um ficheiro CSV enviado no chat."""
+    documento = update.message.document
+    if documento and documento.file_name == "gastos.csv":
+        arquivo_tg = await documento.get_file()
+        await arquivo_tg.download_to_drive(ARQUIVO_CSV)
+        await update.message.reply_text("✅ **Backup restaurado com sucesso!** O bot já está a utilizar este histórico.")
+    else:
+        await update.message.reply_text("⚠️ Envie um documento válido com o nome exato `gastos.csv` para restaurar o histórico.")
 
 
 async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -225,6 +258,7 @@ def main() -> None:
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("resumo", resumo_gastos))
     app.add_handler(CommandHandler("exportar", exportar_csv))
+    app.add_handler(MessageHandler(filters.Document.ALL, restaurar_csv))
 
     print(f"Iniciando bot via Webhook na porta {PORT}...")
     app.run_webhook(
