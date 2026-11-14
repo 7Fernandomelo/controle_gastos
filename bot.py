@@ -1,3 +1,4 @@
+import os
 import csv
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -14,7 +15,13 @@ from telegram.ext import (
 # Estados da conversa
 VALOR, CATEGORIA, DESCRICAO = range(3)
 
-TOKEN = "9075809027:AAG-IJgDq25kqzf-xILyITTbnSfHu1f7GO8"
+# Configurações para a nuvem (o Render fornece a porta automaticamente)
+TOKEN = os.environ.get("TELEGRAM_TOKEN", "9075809027:AAG-IJgDq25kqzf-xILyITTbnSfHu1f7GO8")
+PORT = int(os.environ.get("PORT", 10000))
+
+# ⚠️ MUDE AQUI: Cole o URL exato que o Render te deu (ex: https://controle-gastos-eper.onrender.com)
+RENDER_URL = "https://controle-gastos-eper.onrender.com"
+
 ARQUIVO_CSV = "gastos.csv"
 
 
@@ -58,7 +65,6 @@ async def receber_categoria(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     categoria = query.data
     context.user_data["categoria"] = categoria
 
-    # Pergunta a descrição de forma direta sem citar o /pular
     await query.edit_message_text(
         text=(
             f"🏷️ Categoria selecionada: **{categoria}**\n\n"
@@ -76,7 +82,7 @@ async def receber_descricao(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     categoria = context.user_data["categoria"]
     data_hora = datetime.now().strftime("%d/%m/%Y %H:%M")
 
-    # Salva no arquivo CSV com a descrição informada
+    # Salva no arquivo CSV
     with open(ARQUIVO_CSV, mode="a", newline="", encoding="utf-8") as arquivo:
         escritor = csv.writer(arquivo)
         escritor.writerow([data_hora, f"{valor:.2f}", categoria, descricao])
@@ -115,8 +121,15 @@ def main() -> None:
 
     app.add_handler(conv_handler)
 
-    print("Bot rodando... Pressione Ctrl+C para parar.")
-    app.run_polling()
+    print(f"Iniciando bot via Webhook na porta {PORT}...")
+    
+    # Abre a porta web que o Render exige
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=TOKEN,
+        webhook_url=f"{RENDER_URL}/{TOKEN}"
+    )
 
 
 if __name__ == "__main__":
